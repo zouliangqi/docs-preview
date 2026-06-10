@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>元鼎API对接-装箱打托策略-测试方案</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 980px; margin: 0 auto; padding: 45px; color: #24292e; }
+h1 { border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; margin-top: 24px; }
+h3 { margin-top: 24px; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th, td { border: 1px solid #dfe2e5; padding: 6px 13px; }
+th { background-color: #f6f8fa; font-weight: 600; }
+tr:nth-child(2n) { background-color: #f6f8fa; }
+code { background-color: #f6f8fa; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+pre { background-color: #f6f8fa; padding: 16px; overflow: auto; border-radius: 6px; line-height: 1.45; }
+pre code { background: none; padding: 0; font-size: 85%; }
+blockquote { padding: 0 1em; color: #6a737d; border-left: 0.25em solid #dfe2e5; margin: 16px 0; }
+a { color: #0366d6; text-decoration: none; }
+hr { border: none; border-top: 1px solid #eaecef; margin: 24px 0; }
+</style>
+</head>
+<body>
+<h1>元鼎 API 对接 — 装箱策略/打托策略 测试方案</h1>
+<blockquote>
+<p><strong>关联文档</strong>: <code>元鼎API对接-装箱打托策略-技术方案.md</code><br />
+<strong>飞书文档</strong>: https://www.feishu.cn/docx/Pj2DdeHLOoaRKBxoZcUcGbf7nEm<br />
+<strong>测试环境</strong>: <code>http://172.16.2.116:780/openapi/service</code><br />
+<strong>产品编码</strong>: <code>OSF811007380</code>（托盘出库产品/PTL）<br />
+<strong>创建时间</strong>: 2026-06-08<br />
+<strong>更新时间</strong>: 2026-06-10</p>
+</blockquote>
+<hr />
+<h2>一、任务与代码改动总览</h2>
+<p>| 任务编号 | 负责人 | 改动文件 | 改动内容 | 关联用例 |
+|----------|--------|----------|----------|----------|
+| T1 | 张明森 | <code>OutboundOrderVo.java</code> (spi-oms) | 新增11个打托字段 | TC-1.1 |
+| T2 | 张明森 | <code>OutboundOrderBuilder.java</code> (openapi) | 解析打托入参 | TC-1.1 |
+| T3 | 张明森 | <code>OutboundOrderBuilder.java</code> (openapi) | A+包裹skuStandardQuantity解析 | TC-7.1~7.3 |
+| T4 | 张明森 | <code>PackStrategyApiExecChain.java</code> | validatePalletStrategyParams 5场景 | TC-3.1~3.7 |
+| T5 | 张明森 | <code>PackStrategyApiExecChain.java</code> | buildStrategyByPreference 偏好读取扩展 | TC-4.1~4.5, TC-5.1~5.3, TC-10.1 |
+| T6 | 张明森 | <code>PackStrategyApiExecChain.java</code>, <code>OutboundOrderAttributeBuilder.java</code> | SMART_TOSS 白名单准入 | TC-6.4 |
+| T7 | 张明森 | <code>PackStrategyApiExecChain.java</code> | validateTossSizeLimit + saveCustomTossLimitForThisOrder | TC-6.1~6.3 |
+| T9 | 邹梁琦 | <code>AbstractPackStrategyApiActuator.java</code>, <code>SmartPackingStrategyApiActuator.java</code>, <code>CustomerAppointPackingStrategyApiActuator.java</code> | isNeedToss改造 + 打托分发 | TC-1.1, TC-2.1, TC-9.1~9.2 |
+| T10 | 邹梁琦 | <code>SmartTossStrategyApiActuator.java</code> (新增) | 智能打托执行器完整实现 | TC-1.1, TC-1.3 |
+| T11 | 邹梁琦 | <code>TossStrategyHandler.java</code> | optimizeAndGenerateResult + calculateToss + doOptimizeSmartMixedToss | TC-1.2 |
+| T12 | 邹梁琦 | 无（已有代码支持） | A+包裹/箱产品指定装箱链路验证 | TC-7.1~7.3 |
+| T13 | 邹梁琦 | 无（已有buildStrategyPackParam支持） | PalletLimitVo→BoxStrategyParam透传验证 | TC-1.1, TC-1.3 |
+| T14 | 邹梁琦 | <code>PackStrategyApiExecFacade.java</code> | isToss扩展 + PALLET_LIMIT_ID写入VAS | TC-8.1 |
+| T15 | 邹梁琦 | <code>SmartTossStrategyApiActuator.java</code>, <code>PackStrategyApiExecFacade.java</code> | DC SPI获取gradeCode/version + VAS属性写入 | TC-8.2 |</p>
+<hr />
+<h2>二、测试环境信息</h2>
+<p>| 项目 | 值 |
+|------|-----|
+| API 地址 | <code>http://172.16.2.116:780/openapi/service</code> |
+| app_key | <code>rebecca</code> |
+| sign | <code>00000000000000000000000000000000</code> |
+| PTL 产品 | <code>OSF811007380</code>（exportType=TRAY_PACKING_LIMITED） |
+| 非 PTL 产品 | <code>OSF811002243</code>（exportType≠PTL） |
+| 仓库 | <code>US0001</code> |
+| 收货国 | <code>US</code> |
+| 日志服务器 | 2.116 (oms2 trade-outbound) |
+| 日志关键字 | <code>PackStrategyApiExecChain</code>, <code>SmartTossStrategyApiActuator</code>, <code>TossStrategyHandler</code> |</p>
+<hr />
+<h2>三、基础报文模板</h2>
+<pre><code class="language-json">{
+    &quot;action&quot;: &quot;wh.outbound.createSubmittedOrder&quot;,
+    &quot;app_key&quot;: &quot;rebecca&quot;,
+    &quot;client_id&quot;: &quot;&quot;,
+    &quot;data&quot;: {
+        &quot;winitProductCode&quot;: &quot;【产品编码】&quot;,
+        &quot;warehouseCode&quot;: &quot;US0001&quot;,
+        &quot;consigneeType&quot;: &quot;OTHER&quot;,
+        &quot;shipperOrderNo&quot;: &quot;【用例编号】&quot;,
+        &quot;isRepeat&quot;: &quot;Y&quot;,
+        &quot;buyerCompany&quot;: &quot;元鼎&quot;,
+        &quot;receiverCountry&quot;: &quot;US&quot;,
+        &quot;receiverCity&quot;: &quot;mayo&quot;,
+        &quot;receiverState&quot;: &quot;FL&quot;,
+        &quot;receiverName&quot;: &quot;ross&quot;,
+        &quot;receiverPostcode&quot;: &quot;32066&quot;,
+        &quot;receiverHouseNo&quot;: &quot;6&quot;,
+        &quot;receiverAddressLine1&quot;: &quot;qiryqu3874&quot;,
+        &quot;receiverPhone&quot;: &quot;12032756223&quot;,
+        &quot;receiverEmail&quot;: &quot;test@example.com&quot;,
+
+        &quot;packStrategy&quot;: &quot;【装箱策略】&quot;,
+        &quot;packRule&quot;: &quot;【装箱规则】&quot;,
+
+        &quot;palletStrategy&quot;: &quot;【打托策略】&quot;,
+        &quot;palletRuleCode&quot;: &quot;【打托规则】&quot;,
+        &quot;palletCode&quot;: &quot;【托盘编码】&quot;,
+        &quot;palletStandard&quot;: &quot;【打托等级】&quot;,
+        &quot;limitLength&quot;: &quot;【限长】&quot;,
+        &quot;limitWidth&quot;: &quot;【限宽】&quot;,
+        &quot;limitHeight&quot;: &quot;【限高】&quot;,
+        &quot;limitWeight&quot;: &quot;【限重】&quot;,
+        &quot;allowOversizePallet&quot;: &quot;【是否超托】&quot;,
+        &quot;oversizeMaxLength&quot;: &quot;【超托限长】&quot;,
+        &quot;oversizeMaxWidth&quot;: &quot;【超托限宽】&quot;,
+
+        &quot;packageGroupList&quot;: &quot;【按场景填写或不传】&quot;,
+
+        &quot;merchandiseList&quot;: [
+            {
+                &quot;merchandiseCode&quot;: &quot;A001&quot;,
+                &quot;specification&quot;: &quot;&quot;,
+                &quot;skuType&quot;: &quot;SINGLE&quot;,
+                &quot;outboundQuantity&quot;: &quot;10&quot;,
+                &quot;skuStandardQuantity&quot;: &quot;1&quot;
+            }
+        ]
+    },
+    &quot;format&quot;: &quot;json&quot;,
+    &quot;language&quot;: &quot;zh_CN&quot;,
+    &quot;platform&quot;: &quot;&quot;,
+    &quot;sign&quot;: &quot;00000000000000000000000000000000&quot;,
+    &quot;sign_method&quot;: &quot;md5&quot;,
+    &quot;timestamp&quot;: &quot;2026-06-08 10:00:00&quot;,
+    &quot;version&quot;: &quot;2.0&quot;
+}
+</code></pre>
+<hr />
+<h2>四、按任务维度的测试用例</h2>
+<hr />
+<h3>T4 — Controller 打托入参格式校验</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>PackStrategyApiExecChain.java</code><br />
+<strong>改动方法</strong>：<code>validatePalletStrategyParams()</code> + <code>validateSmartTossRequiredFields()</code><br />
+<strong>改动内容</strong>：5个校验场景 — 非PTL禁传、枚举合法性、互斥检查、必填字段、超托条件</p>
+</blockquote>
+<h4>TC-3.1 非 PTL 产品传打托策略 → 报错</h4>
+<p><strong>报文关键字段</strong>：</p>
+<pre><code class="language-json">&quot;winitProductCode&quot;: &quot;OSF811002243&quot;,
+&quot;palletStrategy&quot;: &quot;SMART_RECOMMEND_TOSS&quot;,
+&quot;palletRuleCode&quot;: &quot;SMART_PRIORITY_SAME_PACKAGE_TOSS&quot;,
+&quot;palletCode&quot;: &quot;PLT-US-001&quot;,
+&quot;palletStandard&quot;: &quot;BP&quot;,
+&quot;limitLength&quot;: &quot;120&quot;,
+&quot;limitWidth&quot;: &quot;100&quot;,
+&quot;limitHeight&quot;: &quot;160&quot;,
+&quot;limitWeight&quot;: &quot;500&quot;
+</code></pre>
+<p><strong>预期</strong>：报错，提示&quot;当前打包方式不支持打托&quot;</p>
+<hr />
+<h4>TC-3.2 仓库自主装箱 + 智能推荐打托 → 互斥报错</h4>
+<p><strong>报文关键字段</strong>：</p>
+<pre><code class="language-json">&quot;winitProductCode&quot;: &quot;OSF811007380&quot;,
+&quot;packStrategy&quot;: &quot;WAREHOUSE_AUTO_PACKING&quot;,
+&quot;palletStrategy&quot;: &quot;SMART_RECOMMEND_TOSS&quot;,
+&quot;palletRuleCode&quot;: &quot;SMART_PRIORITY_SAME_PACKAGE_TOSS&quot;,
+&quot;palletCode&quot;: &quot;PLT-US-001&quot;,
+&quot;palletStandard&quot;: &quot;BP&quot;,
+&quot;limitLength&quot;: &quot;120&quot;,
+&quot;limitWidth&quot;: &quot;100&quot;,
+&quot;limitHeight&quot;: &quot;160&quot;,
+&quot;limitWeight&quot;: &quot;500&quot;
+</code></pre>
+<p><strong>预期</strong>：报错，提示&quot;仓库自主装箱只能配仓库自主打托&quot;</p>
+<hr />
+<h4>TC-3.3 智能推荐打托缺必填字段（缺 palletRuleCode）</h4>
+<p><strong>报文</strong>：智能打托全字段，去掉 <code>palletRuleCode</code></p>
+<p><strong>预期</strong>：报错，提示&quot;打托规则为必填项&quot;</p>
+<hr />
+<h4>TC-3.4 智能推荐打托缺必填字段（缺 limitHeight）</h4>
+<p><strong>报文</strong>：智能打托全字段，去掉 <code>limitHeight</code></p>
+<p><strong>预期</strong>：报错，提示&quot;托盘高度限制为必填项&quot;</p>
+<hr />
+<h4>TC-3.5 打托等级编码不存在</h4>
+<p><strong>报文</strong>：<code>&quot;palletStandard&quot;: &quot;UNKNOWN_CODE&quot;</code></p>
+<p><strong>预期</strong>：报错，提示&quot;系统未维护打托等级编码&quot;</p>
+<hr />
+<h4>TC-3.6 palletStrategy 枚举值非法</h4>
+<p><strong>报文</strong>：<code>&quot;palletStrategy&quot;: &quot;INVALID_STRATEGY&quot;</code></p>
+<p><strong>预期</strong>：报错，提示枚举值不合法</p>
+<hr />
+<h4>TC-3.7 allowOversizePallet=true 但缺超托尺寸</h4>
+<p><strong>报文</strong>：<code>&quot;allowOversizePallet&quot;: &quot;true&quot;</code>（不传 oversizeMaxLength/oversizeMaxWidth）</p>
+<p><strong>预期</strong>：报错，提示&quot;允许超托时超托最大长/宽为必填项&quot;</p>
+<hr />
+<h3>T5 — ExecChain 偏好读取扩展</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>PackStrategyApiExecChain.java</code><br />
+<strong>改动方法</strong>：<code>buildStrategyByPreference()</code> + <code>fillPackFromPreference()</code> + <code>fillTossFromPreference()</code> + <code>validateStrategyMutualExclusion()</code><br />
+<strong>改动内容</strong>：4种组合场景独立读取、降级逻辑、互斥校验</p>
+</blockquote>
+<h4>TC-4.1 都不传 + 偏好完整 → 正常</h4>
+<p><strong>前置</strong>：偏好配置装箱=SMART_RECOMMEND_PACKING + 打托=SMART_RECOMMEND_TOSS（含完整打托字段）</p>
+<p><strong>报文</strong>：不传 packStrategy / palletStrategy</p>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code, rule_code, is_packing
+FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】';
+-- 预期：两条记录（isPacking=Y + isPacking=N）
+</code></pre>
+<hr />
+<h4>TC-4.2 有装箱 + 不传打托 + 偏好有打托 → 打托从偏好读</h4>
+<p><strong>前置</strong>：偏好配置打托=SMART_RECOMMEND_TOSS</p>
+<p><strong>报文</strong>：只传 <code>packStrategy</code> + <code>packRule</code>，不传 palletXxx</p>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<hr />
+<h4>TC-4.3 不传装箱 + 有打托 + 偏好有装箱 → 装箱从偏好读</h4>
+<p><strong>前置</strong>：偏好配置装箱=SMART_RECOMMEND_PACKING</p>
+<p><strong>报文</strong>：只传 palletStrategy + 完整打托字段，不传 packStrategy</p>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<hr />
+<h4>TC-4.4 都不传 + 偏好缺打托 → 报错</h4>
+<p><strong>前置</strong>：偏好只配装箱，无打托偏好</p>
+<p><strong>预期</strong>：报错，提示&quot;接口和出库装箱打托规则中均未获取打托策略&quot;</p>
+<hr />
+<h4>TC-4.5 都不传 + 偏好缺装箱 → 报错</h4>
+<p><strong>前置</strong>：偏好只配打托，无装箱偏好</p>
+<p><strong>预期</strong>：报错，提示&quot;接口和出库装箱打托规则中均未获取装箱策略&quot;</p>
+<hr />
+<h4>TC-5.1 偏好=客户指定打托 → 降级为仓库自主打托</h4>
+<p><strong>前置</strong>：偏好配置打托=CUSTOMER_APPOINT_TOSS</p>
+<p><strong>报文</strong>：不传 palletStrategy</p>
+<p><strong>预期</strong>：<code>code=0</code>，降级为 WAREHOUSE_AUTO_TOSS</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：strategy_code=WAREHOUSE_AUTO_TOSS
+</code></pre>
+<hr />
+<h4>TC-5.2 偏好=客户指定装箱 → 降级为仓库自主装箱</h4>
+<p><strong>前置</strong>：偏好配置装箱=CUSTOMER_APPOINT_PACKING</p>
+<p><strong>报文</strong>：不传 packStrategy</p>
+<p><strong>预期</strong>：<code>code=0</code>，降级为 WAREHOUSE_AUTO_PACKING</p>
+<hr />
+<h4>TC-5.3 偏好=智能打托 + API传仓库自主装箱 → 互斥报错</h4>
+<p><strong>前置</strong>：偏好配置打托=SMART_RECOMMEND_TOSS</p>
+<p><strong>报文</strong>：<code>&quot;packStrategy&quot;: &quot;WAREHOUSE_AUTO_PACKING&quot;</code>（不传 palletStrategy，从偏好读到 SMART_RECOMMEND_TOSS）</p>
+<p><strong>预期</strong>：报错，提示&quot;仓库自主装箱时打托只能仓库自主&quot;</p>
+<hr />
+<h4>TC-10.1 PTL + 无偏好 + 不传打托 → 报错</h4>
+<p><strong>前置</strong>：删除该客户的打托偏好</p>
+<p><strong>报文</strong>：PTL产品，只传装箱策略，不传 palletStrategy</p>
+<p><strong>预期</strong>：报错，提示&quot;接口和出库装箱打托规则中均未获取打托策略&quot;</p>
+<hr />
+<h3>T6 — ExecChain 白名单准入控制</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>PackStrategyApiExecChain.java</code>, <code>OutboundOrderAttributeBuilder.java</code><br />
+<strong>改动内容</strong>：新增 SMART_TOSS 白名单类型 + isSmartTossWhitelist() + 白名单/非白名单分支</p>
+</blockquote>
+<h4>TC-6.4 非白名单客户传智能打托 → palletStrategy 被静默清除</h4>
+<p><strong>前置</strong>：测试客户不在 smartToss 白名单中</p>
+<p><strong>报文</strong>：正常传 palletStrategy=SMART_RECOMMEND_TOSS + 全字段</p>
+<p><strong>预期</strong>：<code>code=0</code>，但走仓库自主打托（palletStrategy 被静默清除）</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：strategy_code=WAREHOUSE_AUTO_TOSS（非白名单降级）
+</code></pre>
+<hr />
+<h3>T7 — ExecChain 自定义托盘限制处理</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>PackStrategyApiExecChain.java</code><br />
+<strong>改动方法</strong>：<code>validateTossSizeLimit()</code> + <code>saveCustomTossLimitForThisOrder()</code><br />
+<strong>改动内容</strong>：尺寸合法性校验 + 落库 <code>oms_wh_outbound_consignee_package_limit_config</code> + configId透传</p>
+</blockquote>
+<h4>TC-6.1 限高超出最大限制</h4>
+<p><strong>报文</strong>：<code>&quot;limitHeight&quot;: &quot;200&quot;</code></p>
+<p><strong>预期</strong>：报错，提示&quot;托盘最大限高超出最大限制&quot;</p>
+<hr />
+<h4>TC-6.2 托盘编码与发货国不匹配</h4>
+<p><strong>报文</strong>：传一个不属于 US 国家的 palletCode</p>
+<p><strong>预期</strong>：报错，提示&quot;托盘编码、托盘长宽高匹配错误&quot;</p>
+<hr />
+<h4>TC-6.3 超托尺寸超出限制</h4>
+<p><strong>报文</strong>：</p>
+<pre><code class="language-json">&quot;allowOversizePallet&quot;: &quot;true&quot;,
+&quot;oversizeMaxLength&quot;: &quot;999&quot;,
+&quot;oversizeMaxWidth&quot;: &quot;999&quot;
+</code></pre>
+<p><strong>预期</strong>：报错</p>
+<hr />
+<h4>TC-6.5 正常流程落库验证</h4>
+<p><strong>报文</strong>：TC-1.1 正常流程</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT id, order_no, customer_limit_type, pallet_length, pallet_width, pallet_height, pallet_weight
+FROM oms_wh_outbound_consignee_package_limit_config
+WHERE order_no = '【orderNo】' AND customer_limit_type = 'THIS_ORDER';
+-- 预期：有记录，尺寸值与API传入一致
+</code></pre>
+<hr />
+<h3>T9 — isNeedToss 改造 + 装箱 Actuator 打托分发</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>AbstractPackStrategyApiActuator.java</code>, <code>SmartPackingStrategyApiActuator.java</code>, <code>CustomerAppointPackingStrategyApiActuator.java</code><br />
+<strong>改动内容</strong>：palletStrategy非空触发打托 + dispatchTossActuator路由</p>
+</blockquote>
+<h4>TC-2.1 智能装箱 + 仓库自主打托 → 走 WarehouseAutoToss</h4>
+<p><strong>报文</strong>：</p>
+<pre><code class="language-json">&quot;packStrategy&quot;: &quot;SMART_RECOMMEND_PACKING&quot;,
+&quot;packRule&quot;: &quot;SMART_SINGLE_SKU_PACKING&quot;,
+&quot;palletStrategy&quot;: &quot;WAREHOUSE_AUTO_TOSS&quot;
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：strategy_code=WAREHOUSE_AUTO_TOSS
+</code></pre>
+<hr />
+<h4>TC-9.1 PTL出库 + 不传 palletStrategy → 走原有自动打托</h4>
+<p><strong>报文</strong>：PTL产品，只传装箱策略，不传 palletXxx</p>
+<p><strong>前置</strong>：无打托偏好配置 或 偏好=WAREHOUSE_AUTO_TOSS</p>
+<p><strong>预期</strong>：<code>code=0</code>，走 exportType=TRAY_PACKING_LIMITED 触发的 WAREHOUSE_AUTO_TOSS</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：strategy_code=WAREHOUSE_AUTO_TOSS
+</code></pre>
+<hr />
+<h4>TC-9.2 非PTL产品 + 不传打托 → 不触发打托</h4>
+<p><strong>报文</strong>：非PTL产品，只传装箱策略</p>
+<p><strong>预期</strong>：<code>code=0</code>，只有装箱记录，没有打托记录</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT COUNT(*) FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：0
+</code></pre>
+<hr />
+<h3>T10 — SmartTossStrategyApiActuator 完整实现</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>SmartTossStrategyApiActuator.java</code>（新增）<br />
+<strong>改动内容</strong>：buildStrategyCommand + buildPalletLimitVo + doPack 全流程</p>
+</blockquote>
+<h4>TC-1.1 智能推荐装箱 + 智能推荐打托（全字段正向流程）</h4>
+<p><strong>报文</strong>：</p>
+<pre><code class="language-json">{
+    &quot;action&quot;: &quot;wh.outbound.createSubmittedOrder&quot;,
+    &quot;app_key&quot;: &quot;rebecca&quot;,
+    &quot;client_id&quot;: &quot;&quot;,
+    &quot;data&quot;: {
+        &quot;winitProductCode&quot;: &quot;OSF811007380&quot;,
+        &quot;warehouseCode&quot;: &quot;US0001&quot;,
+        &quot;consigneeType&quot;: &quot;OTHER&quot;,
+        &quot;shipperOrderNo&quot;: &quot;TC-1-1&quot;,
+        &quot;isRepeat&quot;: &quot;Y&quot;,
+        &quot;buyerCompany&quot;: &quot;元鼎&quot;,
+        &quot;receiverCountry&quot;: &quot;US&quot;,
+        &quot;receiverCity&quot;: &quot;mayo&quot;,
+        &quot;receiverState&quot;: &quot;FL&quot;,
+        &quot;receiverName&quot;: &quot;ross&quot;,
+        &quot;receiverPostcode&quot;: &quot;32066&quot;,
+        &quot;receiverHouseNo&quot;: &quot;6&quot;,
+        &quot;receiverAddressLine1&quot;: &quot;qiryqu3874&quot;,
+        &quot;receiverPhone&quot;: &quot;12032756223&quot;,
+        &quot;receiverEmail&quot;: &quot;test@example.com&quot;,
+        &quot;packStrategy&quot;: &quot;SMART_RECOMMEND_PACKING&quot;,
+        &quot;packRule&quot;: &quot;SMART_SINGLE_SKU_PACKING&quot;,
+        &quot;palletStrategy&quot;: &quot;SMART_RECOMMEND_TOSS&quot;,
+        &quot;palletRuleCode&quot;: &quot;SMART_PRIORITY_SAME_PACKAGE_TOSS&quot;,
+        &quot;palletCode&quot;: &quot;PLT-US-001&quot;,
+        &quot;palletStandard&quot;: &quot;BP&quot;,
+        &quot;limitLength&quot;: &quot;120&quot;,
+        &quot;limitWidth&quot;: &quot;100&quot;,
+        &quot;limitHeight&quot;: &quot;160&quot;,
+        &quot;limitWeight&quot;: &quot;500&quot;,
+        &quot;allowOversizePallet&quot;: &quot;false&quot;,
+        &quot;merchandiseList&quot;: [
+            {
+                &quot;merchandiseCode&quot;: &quot;A001&quot;,
+                &quot;specification&quot;: &quot;&quot;,
+                &quot;skuType&quot;: &quot;SINGLE&quot;,
+                &quot;outboundQuantity&quot;: &quot;10&quot;,
+                &quot;skuStandardQuantity&quot;: &quot;1&quot;
+            }
+        ]
+    },
+    &quot;format&quot;: &quot;json&quot;,
+    &quot;language&quot;: &quot;zh_CN&quot;,
+    &quot;platform&quot;: &quot;&quot;,
+    &quot;sign&quot;: &quot;00000000000000000000000000000000&quot;,
+    &quot;sign_method&quot;: &quot;md5&quot;,
+    &quot;timestamp&quot;: &quot;2026-06-08 10:00:00&quot;,
+    &quot;version&quot;: &quot;2.0&quot;
+}
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code>, 返回 orderNo</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">-- 装箱策略记录
+SELECT order_no, strategy_code, rule_code, is_packing, confirm, result_task_no
+FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'Y';
+-- 预期：strategy_code=SMART_RECOMMEND_PACKING, rule_code=SMART_SINGLE_SKU_PACKING, confirm=Y
+
+-- 打托策略记录
+SELECT order_no, strategy_code, rule_code, is_packing, confirm, result_task_no
+FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：strategy_code=SMART_RECOMMEND_TOSS, rule_code=SMART_PRIORITY_SAME_PACKAGE_TOSS, confirm=Y, result_task_no 非空
+
+-- 打托明细
+SELECT order_no, pallet_code, pallet_no, write_type
+FROM oms_wh_outbound_order_appoint_toss_strategy 
+WHERE order_no = '【orderNo】';
+-- 预期：有记录，pallet_code=PLT-US-001
+</code></pre>
+<hr />
+<h4>TC-1.3 智能推荐打托 + 允许超托</h4>
+<p><strong>报文</strong>：TC-1.1 基础上改：</p>
+<pre><code class="language-json">&quot;allowOversizePallet&quot;: &quot;true&quot;,
+&quot;oversizeMaxLength&quot;: &quot;180&quot;,
+&quot;oversizeMaxWidth&quot;: &quot;150&quot;
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<p><strong>验证</strong>：打托明细存在，PalletLimitVo 的 overLength/overWidth 正确传入 IPS（日志确认）</p>
+<hr />
+<h3>T11 — TossStrategyHandler 智能混托优化</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>TossStrategyHandler.java</code><br />
+<strong>改动方法</strong>：<code>optimizeAndGenerateResult()</code> + <code>calculateToss()</code> + <code>doOptimizeSmartMixedToss()</code><br />
+<strong>改动内容</strong>：两规则试算比较取优</p>
+</blockquote>
+<h4>TC-1.2 智能混托优化（SMART_OPTIMAL_MIXED_TOSS）</h4>
+<p><strong>报文</strong>：TC-1.1 基础上改 <code>palletRuleCode</code>:</p>
+<pre><code class="language-json">&quot;palletRuleCode&quot;: &quot;SMART_OPTIMAL_MIXED_TOSS&quot;
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<p><strong>验证日志</strong>：</p>
+<pre><code class="language-bash">grep &quot;智能混托优化&quot; /usr/local/logs/oms2/trade-outbound.log | grep &quot;【orderNo】&quot;
+# 应看到：混托托盘数=X, 优先同类包裹打托托盘数=Y
+</code></pre>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code, rule_code, result_task_no
+FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'N';
+-- 预期：result_task_no 非空（表示最终打托成功）
+</code></pre>
+<hr />
+<h3>T12 — 客户指定装箱支持 A+包裹/箱产品</h3>
+<blockquote>
+<p><strong>改动文件</strong>：无（已有代码支持）<br />
+<strong>验证内容</strong>：简化 packageGroupList（只有 scatteredMerchandiseList）走通完整装箱链路</p>
+</blockquote>
+<h4>TC-7.1 A+包裹装箱（散件 SINGLE）</h4>
+<p><strong>报文</strong>：</p>
+<pre><code class="language-json">{
+    &quot;action&quot;: &quot;wh.outbound.createSubmittedOrder&quot;,
+    &quot;app_key&quot;: &quot;rebecca&quot;,
+    &quot;client_id&quot;: &quot;&quot;,
+    &quot;data&quot;: {
+        &quot;winitProductCode&quot;: &quot;OSF811007380&quot;,
+        &quot;warehouseCode&quot;: &quot;US0001&quot;,
+        &quot;consigneeType&quot;: &quot;OTHER&quot;,
+        &quot;shipperOrderNo&quot;: &quot;TC-7-1&quot;,
+        &quot;isRepeat&quot;: &quot;Y&quot;,
+        &quot;buyerCompany&quot;: &quot;元鼎&quot;,
+        &quot;receiverCountry&quot;: &quot;US&quot;,
+        &quot;receiverCity&quot;: &quot;mayo&quot;,
+        &quot;receiverState&quot;: &quot;FL&quot;,
+        &quot;receiverName&quot;: &quot;ross&quot;,
+        &quot;receiverPostcode&quot;: &quot;32066&quot;,
+        &quot;receiverHouseNo&quot;: &quot;6&quot;,
+        &quot;receiverAddressLine1&quot;: &quot;qiryqu3874&quot;,
+        &quot;receiverPhone&quot;: &quot;12032756223&quot;,
+        &quot;receiverEmail&quot;: &quot;test@example.com&quot;,
+        &quot;packStrategy&quot;: &quot;CUSTOMER_APPOINT_PACKING&quot;,
+        &quot;packRule&quot;: &quot;CUSTOMER_ALL_SINGLE_SKU_ITEM_PACKING&quot;,
+        &quot;packageGroupList&quot;: [
+            {
+                &quot;packageGroupNo&quot;: &quot;BOXG01&quot;,
+                &quot;packageQty&quot;: 10,
+                &quot;scatteredMerchandiseList&quot;: [
+                    {
+                        &quot;merchandiseCode&quot;: &quot;A001&quot;,
+                        &quot;specification&quot;: &quot;&quot;,
+                        &quot;quantity&quot;: 10
+                    }
+                ]
+            }
+        ],
+        &quot;merchandiseList&quot;: [
+            {
+                &quot;merchandiseCode&quot;: &quot;A001&quot;,
+                &quot;specification&quot;: &quot;&quot;,
+                &quot;skuType&quot;: &quot;SINGLE&quot;,
+                &quot;outboundQuantity&quot;: &quot;10&quot;,
+                &quot;skuStandardQuantity&quot;: &quot;1&quot;
+            }
+        ]
+    },
+    &quot;format&quot;: &quot;json&quot;,
+    &quot;language&quot;: &quot;zh_CN&quot;,
+    &quot;platform&quot;: &quot;&quot;,
+    &quot;sign&quot;: &quot;00000000000000000000000000000000&quot;,
+    &quot;sign_method&quot;: &quot;md5&quot;,
+    &quot;timestamp&quot;: &quot;2026-06-08 10:00:00&quot;,
+    &quot;version&quot;: &quot;2.0&quot;
+}
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">SELECT strategy_code, rule_code FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】' AND is_packing = 'Y';
+-- 预期：strategy_code=CUSTOMER_APPOINT_PACKING, rule_code=CUSTOMER_ALL_SINGLE_SKU_ITEM_PACKING
+</code></pre>
+<hr />
+<h4>TC-7.2 箱产品装箱（BOX）</h4>
+<p><strong>报文</strong>：TC-7.1 基础上改商品：</p>
+<pre><code class="language-json">&quot;merchandiseList&quot;: [
+    {&quot;merchandiseCode&quot;: &quot;BOX-001&quot;, &quot;specification&quot;: &quot;&quot;, &quot;skuType&quot;: &quot;BOX&quot;, &quot;outboundQuantity&quot;: &quot;5&quot;, &quot;skuStandardQuantity&quot;: &quot;6&quot;}
+],
+&quot;packageGroupList&quot;: [
+    {&quot;packageGroupNo&quot;: &quot;BOXG01&quot;, &quot;packageQty&quot;: 5, &quot;scatteredMerchandiseList&quot;: [{&quot;merchandiseCode&quot;: &quot;BOX-001&quot;, &quot;specification&quot;: &quot;&quot;, &quot;quantity&quot;: 5}]}
+]
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code></p>
+<hr />
+<h4>TC-7.3 A+包裹装箱 + 智能推荐打托（组合场景）</h4>
+<p><strong>报文</strong>：TC-7.1 基础上增加打托字段：</p>
+<pre><code class="language-json">&quot;palletStrategy&quot;: &quot;SMART_RECOMMEND_TOSS&quot;,
+&quot;palletRuleCode&quot;: &quot;SMART_PRIORITY_SAME_PACKAGE_TOSS&quot;,
+&quot;palletCode&quot;: &quot;PLT-US-001&quot;,
+&quot;palletStandard&quot;: &quot;BP&quot;,
+&quot;limitLength&quot;: &quot;120&quot;,
+&quot;limitWidth&quot;: &quot;100&quot;,
+&quot;limitHeight&quot;: &quot;160&quot;,
+&quot;limitWeight&quot;: &quot;500&quot;
+</code></pre>
+<p><strong>预期</strong>：<code>code=0</code>，装箱走客户指定（A+），打托走智能推荐</p>
+<hr />
+<h3>T14 — VAS 关联 OSF8V1727</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>PackStrategyApiExecFacade.java</code><br />
+<strong>改动方法</strong>：<code>buildPackStrategyAppointPackingVas()</code><br />
+<strong>改动内容</strong>：isToss 条件扩展 palletStrategy=SMART_RECOMMEND_TOSS + PALLET_LIMIT_ID 写入</p>
+</blockquote>
+<h4>TC-8.1 智能打托 → VAS 关联 OSF8V1727（不是 OSF8V1726）</h4>
+<p><strong>报文</strong>：TC-1.1</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">-- 确认是 OSF8V1727
+SELECT order_no, service_code
+FROM oms_wh_outbound_order_vas 
+WHERE order_no = '【orderNo】' AND service_code = 'OSF8V1727';
+-- 预期：存在记录
+
+-- 确认没有 OSF8V1726
+SELECT COUNT(*) FROM oms_wh_outbound_order_vas 
+WHERE order_no = '【orderNo】' AND service_code = 'OSF8V1726';
+-- 预期：0
+
+-- 确认 PALLET_LIMIT_ID 属性
+SELECT attr.attr_code, attr.attr_value
+FROM oms_wh_outbound_order_vas vas
+JOIN oms_wh_outbound_order_vas_attr attr ON vas.id = attr.vas_id
+WHERE vas.order_no = '【orderNo】' AND vas.service_code = 'OSF8V1727' 
+AND attr.attr_code = 'PALLET_LIMIT_ID';
+-- 预期：有记录，attr_value = configId
+</code></pre>
+<hr />
+<h3>T15 — 打托标准等级保存</h3>
+<blockquote>
+<p><strong>改动文件</strong>：<code>SmartTossStrategyApiActuator.java</code>（resolvePalletStandardGrade）, <code>PackStrategyApiExecFacade.java</code><br />
+<strong>改动内容</strong>：DC SPI 获取 gradeCode/version + VAS属性 PALLET_STANDARD_GRADE_CODE/VERSION/CONFIG 写入</p>
+</blockquote>
+<h4>TC-8.2 palletStandard 存入 VAS 属性</h4>
+<p><strong>报文</strong>：TC-1.1（含 <code>&quot;palletStandard&quot;: &quot;BP&quot;</code>）</p>
+<p><strong>验证SQL</strong>：</p>
+<pre><code class="language-sql">-- PALLET_STANDARD_GRADE_CODE = uniqueCode
+SELECT attr.attr_code, attr.attr_value
+FROM oms_wh_outbound_order_vas vas
+JOIN oms_wh_outbound_order_vas_attr attr ON vas.id = attr.vas_id
+WHERE vas.order_no = '【orderNo】' AND vas.service_code = 'OSF8V1727' 
+AND attr.attr_code = 'PALLET_STANDARD_GRADE_CODE';
+-- 预期：attr_value = 'BP'
+
+-- PALLET_STANDARD_GRADE_VERSION
+SELECT attr.attr_code, attr.attr_value
+FROM oms_wh_outbound_order_vas vas
+JOIN oms_wh_outbound_order_vas_attr attr ON vas.id = attr.vas_id
+WHERE vas.order_no = '【orderNo】' AND vas.service_code = 'OSF8V1727' 
+AND attr.attr_code = 'PALLET_STANDARD_GRADE_VERSION';
+-- 预期：有记录，attr_value 为 DC 返回的版本号
+
+-- PALLET_STANDARD_CONFIG
+SELECT attr.attr_code, attr.attr_value
+FROM oms_wh_outbound_order_vas vas
+JOIN oms_wh_outbound_order_vas_attr attr ON vas.id = attr.vas_id
+WHERE vas.order_no = '【orderNo】' AND vas.service_code = 'OSF8V1727' 
+AND attr.attr_code = 'PALLET_STANDARD_CONFIG';
+-- 预期：attr_value = 'BP'
+</code></pre>
+<hr />
+<h2>五、日志检查指南</h2>
+<p>| 目的 | grep 命令 |
+|------|-----------|
+| 订单全链路日志 | <code>grep &quot;【orderNo】&quot; trade-outbound.log</code> |
+| 确认装箱执行器 | <code>grep &quot;StrategyApiActuator&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 确认打托执行器 | <code>grep &quot;TossStrategy\|SmartToss&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| IPS 调用 | <code>grep &quot;packagingGoodsService\|PackService&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 偏好读取 | <code>grep &quot;queryConsigneePackageLimit\|buildStrategyByPreference&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 偏好降级 | <code>grep &quot;degrade\|降级\|WAREHOUSE_AUTO&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 尺寸校验 | <code>grep &quot;validateTossSizeLimit\|palletLimit&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 混托优化 | <code>grep &quot;智能混托优化&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| VAS 关联 | <code>grep &quot;OSF8V1727\|OSF8V1726\|PALLET_STANDARD&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 白名单 | <code>grep &quot;smartToss\|whitelist\|白名单&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |
+| 报错详情 | <code>grep &quot;SPIException\|ErrorCode\|error&quot; trade-outbound.log \| grep &quot;【orderNo】&quot;</code> |</p>
+<hr />
+<h2>六、DB 检查 SQL 汇总</h2>
+<h3>6.1 装箱/打托策略主记录</h3>
+<pre><code class="language-sql">SELECT order_no, strategy_code, rule_code, is_packing, confirm, 
+       result_task_no, plan_last_task_no, actual_strategy_code
+FROM oms_wh_outbound_order_packing_strategy 
+WHERE order_no = '【orderNo】'
+ORDER BY is_packing DESC;
+</code></pre>
+<h3>6.2 打托明细</h3>
+<pre><code class="language-sql">SELECT order_no, pallet_code, pallet_no, pallet_name, 
+       origin_pallet_no, write_type
+FROM oms_wh_outbound_order_appoint_toss_strategy 
+WHERE order_no = '【orderNo】';
+</code></pre>
+<h3>6.3 自定义托盘限制落库</h3>
+<pre><code class="language-sql">SELECT id, order_no, customer_limit_type, pallet_length, pallet_width, 
+       pallet_height, pallet_weight, over_length, over_width
+FROM oms_wh_outbound_consignee_package_limit_config
+WHERE order_no = '【orderNo】' AND customer_limit_type = 'THIS_ORDER';
+</code></pre>
+<h3>6.4 VAS 信息</h3>
+<pre><code class="language-sql">-- VAS 服务
+SELECT order_no, service_code
+FROM oms_wh_outbound_order_vas 
+WHERE order_no = '【orderNo】' AND service_code IN ('OSF8V1726', 'OSF8V1727');
+
+-- VAS 全部属性
+SELECT vas.service_code, attr.attr_code, attr.attr_value
+FROM oms_wh_outbound_order_vas vas
+JOIN oms_wh_outbound_order_vas_attr attr ON vas.id = attr.vas_id
+WHERE vas.order_no = '【orderNo】' AND vas.service_code = 'OSF8V1727';
+</code></pre>
+<h3>6.5 偏好配置</h3>
+<pre><code class="language-sql">SELECT customer_code, product_code, limit_type, default_strategy, default_rule
+FROM oms_wh_outbound_consignee_package_limit
+WHERE customer_code = '【客户编码】' AND limit_type IN ('PACKING', 'PALLET');
+</code></pre>
+<hr />
+<h2>七、用例覆盖矩阵</h2>
+<p>| 用例编号 | 关联任务 | 场景 | 预期 | 优先级 |
+|----------|----------|------|------|--------|
+| TC-1.1 | T1~T2,T9~T10,T13~T15 | 智能装箱+智能打托全链路 | ✅ | P0 |
+| TC-1.2 | T11 | 智能混托优化 | ✅ | P1 |
+| TC-1.3 | T10,T13 | 智能打托+超托 | ✅ | P1 |
+| TC-2.1 | T9 | 智能装箱+仓库自主打托 | ✅ | P1 |
+| TC-3.1 | T4 | 非PTL传打托→报错 | ❌ | P0 |
+| TC-3.2 | T4 | 仓库自主装箱+智能打托→报错 | ❌ | P0 |
+| TC-3.3 | T4 | 缺palletRuleCode→报错 | ❌ | P0 |
+| TC-3.4 | T4 | 缺limitHeight→报错 | ❌ | P0 |
+| TC-3.5 | T4 | 打托等级不存在→报错 | ❌ | P1 |
+| TC-3.6 | T4 | 枚举非法→报错 | ❌ | P0 |
+| TC-3.7 | T4 | 超托缺尺寸→报错 | ❌ | P1 |
+| TC-4.1 | T5 | 都不传+偏好完整→正常 | ✅ | P0 |
+| TC-4.2 | T5 | 有装箱+偏好打托→正常 | ✅ | P0 |
+| TC-4.3 | T5 | 有打托+偏好装箱→正常 | ✅ | P0 |
+| TC-4.4 | T5 | 偏好缺打托→报错 | ❌ | P0 |
+| TC-4.5 | T5 | 偏好缺装箱→报错 | ❌ | P0 |
+| TC-5.1 | T5 | 指定打托降级 | ✅ | P0 |
+| TC-5.2 | T5 | 指定装箱降级 | ✅ | P0 |
+| TC-5.3 | T5 | 偏好智能打托+仓库装箱→报错 | ❌ | P0 |
+| TC-6.1 | T7 | 限高超限→报错 | ❌ | P1 |
+| TC-6.2 | T7 | 托盘国家不匹配→报错 | ❌ | P1 |
+| TC-6.3 | T7 | 超托尺寸超限→报错 | ❌ | P1 |
+| TC-6.4 | T6 | 非白名单→静默降级 | ✅ | P1 |
+| TC-6.5 | T7 | 正常流程托盘限制落库 | ✅ | P1 |
+| TC-7.1 | T3,T12 | A+包裹装箱 | ✅ | P1 |
+| TC-7.2 | T3,T12 | 箱产品装箱 | ✅ | P1 |
+| TC-7.3 | T3,T12,T9~T10 | A+包裹+智能打托 | ✅ | P1 |
+| TC-8.1 | T14 | VAS OSF8V1727 + PALLET_LIMIT_ID | ✅ | P1 |
+| TC-8.2 | T15 | palletStandard→VAS属性 | ✅ | P1 |
+| TC-9.1 | T9 | PTL兼容-老逻辑自动打托 | ✅ | P2 |
+| TC-9.2 | T9 | 非PTL不打托 | ✅ | P2 |
+| TC-10.1 | T5 | PTL无偏好→报错 | ❌ | P0 |</p>
+<hr />
+<h2>八、测试执行顺序建议</h2>
+<p>按任务依赖链执行：</p>
+<ol>
+<li><strong>第一轮（入参校验 T4）</strong>：TC-3.1~3.7 — 快速验证校验逻辑</li>
+<li><strong>第二轮（偏好 T5）</strong>：TC-4.1~4.5 → TC-5.1~5.3 → TC-10.1 — 验证偏好读取+降级+互斥</li>
+<li><strong>第三轮（全链路 T9+T10）</strong>：TC-1.1 — golden path 验证整条链路</li>
+<li><strong>第四轮（扩展场景）</strong>：TC-1.2(混托) → TC-1.3(超托) → TC-2.1(仓库自主)</li>
+<li><strong>第五轮（尺寸+白名单 T6+T7）</strong>：TC-6.1~6.5</li>
+<li><strong>第六轮（A+包裹 T12）</strong>：TC-7.1~7.3</li>
+<li><strong>第七轮（VAS T14+T15）</strong>：TC-8.1~8.2</li>
+<li><strong>第八轮（回归 T9 兼容）</strong>：TC-9.1~9.2</li>
+</ol>
+<hr />
+<h2>九、注意事项</h2>
+<ol>
+<li><strong>偏好配置需提前准备</strong>：TC-4.x/TC-5.x 依赖偏好数据，需在 <code>oms_wh_outbound_consignee_package_limit</code> 表中提前配置</li>
+<li><strong>白名单配置</strong>：TC-6.4 需确认测试客户的白名单状态（<code>oms_business_base_config_attr</code> 中 smartToss 类型）</li>
+<li><strong>托盘基础数据</strong>：TC-1.x/TC-6.x 依赖 palletCode 对应的托盘配置（国家、尺寸限制），需确认环境有数据</li>
+<li><strong>打托等级数据</strong>：TC-3.5/TC-8.2 需确认 DC 系统有 BP 编码对应的打托标准等级</li>
+<li><strong>IPS 服务可用性</strong>：智能打托依赖 IPS 装箱策略执行服务，确认 IPS 正常</li>
+<li><strong>日志级别</strong>：确认 trade-outbound 相关包的日志级别为 INFO 或 DEBUG</li>
+<li><strong>每次测试用不同 shipperOrderNo</strong>：方便后续定位日志和数据</li>
+</ol>
+</body>
+</html>
